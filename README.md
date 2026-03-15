@@ -23,7 +23,7 @@ The install chain handles it automatically:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-github-username/sata-spindown-guard.git
+git clone https://github.com/paulmann/sata-spindown-guard.git
 cd sata-spindown-guard
 
 # Install globally as `hddown` — resolves absolute path, ensures executable bit, creates symlink
@@ -328,7 +328,7 @@ Contributions, feature requests, and bug reports are very welcome.
 ### Development Setup
 
 ```bash
-git clone https://github.com/your-github-username/sata-spindown-guard.git
+git clone https://github.com/paulmann/sata-spindown-guard.git
 cd sata-spindown-guard
 
 # Basic syntax check
@@ -369,7 +369,7 @@ This project is licensed under the **MIT License** – see the [`LICENSE`](LICEN
 
 - 🌐 Website: [deynekin.com](https://deynekin.com)  
 - 📧 Email: mid1977@gmail.com  
-- 🐙 GitHub: [@your-github-username](https://github.com/your-github-username)
+- 🐙 GitHub: [@paulmann](https://github.com/paulmann)
 
 ### Getting Help
 
