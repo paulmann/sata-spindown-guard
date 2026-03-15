@@ -32,6 +32,7 @@ src="$(readlink -f ./sata-spindown-guard.sh 2>/dev/null || realpath ./sata-spind
   && { [ -x "$src" ] || chmod +x "$src"; } \
   && sudo ln -sf "$src" /usr/local/bin/hddown \
   && sudo ln -sf "$src" /usr/local/bin/hddoff \
+  && sudo ln -sf "$src" /usr/local/bin/hdd_poweroff_guard.sh \
   && echo "✅ Installed: $(which hddown) → $src"
 ```
 
