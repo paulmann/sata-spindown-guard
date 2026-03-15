@@ -27,13 +27,19 @@ git clone https://github.com/paulmann/sata-spindown-guard.git
 cd sata-spindown-guard
 
 # Install globally as `hddown` — resolves absolute path, ensures executable bit, creates symlink
-src="$(readlink -f ./sata-spindown-guard.sh 2>/dev/null || realpath ./sata-spindown-guard.sh 2>/dev/null)" \
+src="$(readlink -f ./sata-spindown-guard.sh 2>/dev/null || realpath ./sata-spindown-guard.sh 2>/dev/null || echo "")" \
+  && [ -n "$src" ] \
   && [ -f "$src" ] \
   && { [ -x "$src" ] || chmod +x "$src"; } \
   && sudo ln -sf "$src" /usr/local/bin/hddown \
   && sudo ln -sf "$src" /usr/local/bin/hddoff \
   && sudo ln -sf "$src" /usr/local/bin/hdd_poweroff_guard.sh \
-  && echo "✅ Installed: $(which hddown) → $src"
+  && sudo ln -sf "$src" /usr/local/bin/hdd_poweroff_guard \
+  && echo "" \
+  && echo "✅ Installed successfully!" \
+  && echo "   Commands: hddown, hddoff, hdd_poweroff_guard" \
+  && echo "   Source:   $src" \
+  && echo "   Symlink:  $(readlink -f /usr/local/bin/hddown 2>/dev/null || echo 'N/A')"
 ```
 
 > The install command automatically resolves the absolute path, grants the executable  
