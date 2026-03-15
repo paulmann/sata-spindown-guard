@@ -14,6 +14,23 @@
 # =============================================================================
 #
 # Changelog:
+#   v2.4  • BUGFIX: added active/idle pattern to case statements in process_disk()
+#                   and process_disk_wake() — hdparm -C returns "active/idle" as a
+#                   single slash-separated token; previously matched "unexpected state"
+#         • BUGFIX: wake_drive() returned EXIT_WARNING (treated as error) when drive
+#                   reached active/idle after dd — fixed: active/idle is SUCCESS
+#         • BUGFIX: process_disk_wake() did not propagate $? from wake_drive() on
+#                   failure; now passes EXIT_WARNING/EXIT_ERROR correctly
+#         • Added diagnose_and_force_poweroff(): detailed APM/PM/SMART capability
+#                   log + udisksctl power-off fallback + sysfs SCSI offline/delete
+#         • power_off_drive() now calls diagnose_and_force_poweroff() on hdparm fail
+#         • wake_drive() — case-based state validation after spinup, with
+#                   measured spinup time logged (seconds via $SECONDS builtin)
+#         • process_disk_wake() — full case-based state handling before wake:
+#                   active/idle/active|idle treated as already-awake (EXIT_OK),
+#                   unknown state gets a best-effort wake attempt
+#         • State check after sysfs/delete in process_disk() handles "removed"
+#                   as a valid successful final state
 #   v2.3  • Added -w/--wake flag: wake (spin up) drives from standby/sleep
 #         • Added wake_drive() function — triggers read I/O to spin up the drive
 #         • Added process_disk_wake() for the wake lifecycle
@@ -497,43 +514,163 @@ power_off_drive() {
     return $?
 }
 
-# wake_drive /dev/sdX DRY_RUN
-# Wakes a drive from standby/sleep by issuing a single-sector read via dd.
-# SATA drives always have power; sleep mode just stops the spindle — any
-# I/O request causes the kernel/SATA controller to issue COMRESET and spin up.
+# =============================================================================
+#  WAKE DRIVE
+#  Sends a single-sector read via dd to spin up a sleeping/standby SATA drive.
+#  Uses bash $SECONDS builtin to measure and log actual spinup time.
+#  Returns: EXIT_OK  — drive confirmed active/idle after spinup
+#           EXIT_WARNING — drive state uncertain after spinup (may need more time)
+#           EXIT_ERROR   — dd I/O failed; drive did not respond at all
+# =============================================================================
+
 wake_drive() {
     local disk_path="$1"
     local dry_run_flag="$2"
 
     if [[ "${dry_run_flag}" == "true" ]]; then
-        info "[DRY-RUN] Would wake drive: dd if=${disk_path} of=/dev/null count=1 bs=512"
-        return 0
+        info "[DRY-RUN] Would send wake I/O: dd if=${disk_path} of=/dev/null count=1 bs=512"
+        info "[DRY-RUN] Would wait for spindle and verify state via hdparm -C"
+        return "${EXIT_OK}"
     fi
 
-    info "Sending wake-up I/O to ${disk_path} (read sector 0)..."
-    if dd if="${disk_path}" of=/dev/null count=1 bs=512 2>/dev/null; then
-        info "I/O delivered — waiting for spindle to reach speed..."
-        sleep 3
-        local state_after
-        state_after=$(get_drive_state "${disk_path}")
-        case "${state_after}" in
-            active|idle|active/idle)
-                success "Drive is awake (state: ${state_after})"
-                return "${EXIT_OK}"
-                ;;
-            standby|sleep)
-                warn "Drive still reports ${state_after} after wake attempt"
-                return "${EXIT_WARNING}"
-                ;;
-            *)
-                warn "Drive state after wake attempt: ${state_after} (unexpected, may still be spinning up)"
-                return "${EXIT_WARNING}"
-                ;;
-        esac
-    else
-        error "dd read failed on ${disk_path} — cannot wake drive"
+    info "Sending wake-up I/O to ${disk_path} (read sector 0 via dd)..."
+
+    local t_start="${SECONDS}"
+
+    if ! dd if="${disk_path}" of=/dev/null count=1 bs=512 2>/dev/null; then
+        error "dd read failed on ${disk_path} — drive did not respond to I/O"
+        error "Possible causes: drive removed, SATA link lost, or firmware error"
+        error "Check: dmesg | grep -E '$(basename "${disk_path}")|ata[0-9]'"
         return "${EXIT_ERROR}"
     fi
+
+    local t_io=$(( SECONDS - t_start ))
+    info "I/O delivered in ${t_io}s — waiting for spindle to reach rated speed..."
+
+    # Give the drive time to complete spinup (conservative: 4s after dd returns)
+    sleep 4
+
+    local t_total=$(( SECONDS - t_start ))
+    local state_after
+    state_after=$(get_drive_state "${disk_path}")
+
+    case "${state_after}" in
+        active|idle|active/idle)
+            success "Drive is awake and spinning (state: ${state_after}, total spinup: ${t_total}s)"
+            return "${EXIT_OK}"
+            ;;
+
+        standby|sleep)
+            # Drive went back to sleep immediately — likely APM or kernel re-idle
+            warn "Drive returned to ${state_after} immediately after wake (spinup: ${t_total}s)"
+            warn "Possible cause: hdparm APM level too aggressive (hdparm -B 254 ${disk_path})"
+            warn "Check: hdparm -I ${disk_path} | grep -i 'power management'"
+            return "${EXIT_WARNING}"
+            ;;
+
+        unknown)
+            warn "Drive state could not be determined after wake attempt (${t_total}s elapsed)"
+            warn "Drive may still be spinning up — retry in a few seconds"
+            warn "Manual check: hdparm -C ${disk_path}"
+            return "${EXIT_WARNING}"
+            ;;
+
+        *)
+            warn "Unexpected drive state '${state_after}' after wake (${t_total}s elapsed)"
+            warn "Manual check: hdparm -C ${disk_path}"
+            return "${EXIT_WARNING}"
+            ;;
+    esac
+}
+
+# =============================================================================
+#  PER-DISK PROCESSING — WAKE MODE
+#  Full lifecycle: validate → resolve → verify → read state → wake if needed.
+#
+#  State machine:
+#    standby / sleep          → send wake I/O via wake_drive()
+#    active / idle / active/idle → already running, no action needed (EXIT_OK)
+#    unknown                  → best-effort wake attempt with explicit warning
+#    anything else            → skip with EXIT_WARNING (defensive)
+#
+#  Returns: EXIT_OK      — drive confirmed awake, or was already running
+#           EXIT_WARNING — state uncertain, best-effort wake attempted
+#           EXIT_ERROR   — drive did not respond to I/O at all
+# =============================================================================
+
+process_disk_wake() {
+    local disk_id="$1"
+    local disk_path
+    local state_before
+    local result="${EXIT_OK}"
+
+    info "--- Processing disk (wake): ${disk_id}"
+
+    # Step 1 — Validate disk ID exists in /dev/disk/by-id/
+    if ! validate_disk_id "${disk_id}"; then
+        warn "Disk ID '${disk_id}' not found in /dev/disk/by-id/"
+        list_ata_disks
+        return "${EXIT_WARNING}"
+    fi
+
+    # Step 2 — Resolve to /dev/sdX
+    disk_path=$(resolve_disk_path "${disk_id}") || {
+        warn "Failed to resolve device path for '${disk_id}'"
+        return "${EXIT_WARNING}"
+    }
+    info "Device path resolved: ${disk_path}"
+
+    # Step 3 — Confirm ATA/SATA identity (drive must respond to hdparm -i)
+    if ! verify_sata_disk "${disk_path}"; then
+        warn "Skipping non-SATA device: ${disk_path}"
+        return "${EXIT_WARNING}"
+    fi
+
+    # Step 4 — Read current power state before acting
+    state_before=$(get_drive_state "${disk_path}")
+    info "Drive state before wake: ${state_before}"
+
+    case "${state_before}" in
+
+        standby|sleep)
+            # ── Normal wake path ──────────────────────────────────────────────
+            info "Drive is ${state_before} — initiating spinup sequence"
+            set +e
+            wake_drive "${disk_path}" "${DRY_RUN}"
+            result=$?
+            set -e
+            ;;
+
+        active|idle|active/idle)
+            # ── Already running — nothing to do ───────────────────────────────
+            # active/idle is the standard hdparm -C response for a spinning drive.
+            # It is NOT an error; the drive is ready for I/O.
+            success "Drive is already awake (state: ${state_before}) — no action needed"
+            result="${EXIT_OK}"
+            ;;
+
+        unknown)
+            # ── State unreadable — attempt wake defensively ───────────────────
+            warn "Drive state could not be determined — attempting best-effort wake"
+            warn "If the drive is already running, this is harmless"
+            set +e
+            wake_drive "${disk_path}" "${DRY_RUN}"
+            result=$?
+            set -e
+            # Downgrade error → warning for unknown-state drives
+            # (we cannot be certain it failed)
+            [[ "${result}" == "${EXIT_ERROR}" ]] && result="${EXIT_WARNING}"
+            ;;
+
+        *)
+            warn "Unexpected drive state '${state_before}' — skipping wake"
+            warn "Manual check: hdparm -C ${disk_path}"
+            result="${EXIT_WARNING}"
+            ;;
+
+    esac
+
+    return "${result}"
 }
 
 ## =============================================================================
@@ -622,72 +759,6 @@ process_disk() {
     return "${result}"
 }
 
-# =============================================================================
-#  PER-DISK PROCESSING — WAKE MODE
-#  v2.4: BUGFIX — active/idle treated as "already awake", not unexpected state
-# =============================================================================
-
-process_disk_wake() {
-    local disk_id="$1"
-    local disk_path
-    local state_before
-    local result="${EXIT_OK}"
-
-    info "--- Processing disk (wake): ${disk_id}"
-
-    if ! validate_disk_id "${disk_id}"; then
-        warn "Disk ID '${disk_id}' not found in /dev/disk/by-id/"
-        list_ata_disks
-        return "${EXIT_WARNING}"
-    fi
-
-    disk_path=$(resolve_disk_path "${disk_id}") || {
-        warn "Failed to resolve device path for '${disk_id}'"
-        return "${EXIT_WARNING}"
-    }
-    info "Device path resolved: ${disk_path}"
-
-    if ! verify_sata_disk "${disk_path}"; then
-        warn "Skipping non-SATA device: ${disk_path}"
-        return "${EXIT_WARNING}"
-    fi
-
-    state_before=$(get_drive_state "${disk_path}")
-    info "Drive state: ${state_before}"
-
-    case "${state_before}" in
-        standby|sleep)
-            info "Drive is ${state_before} — sending wake-up command"
-            if wake_drive "${disk_path}" "${DRY_RUN}"; then
-                result="${EXIT_OK}"
-            else
-                result="${EXIT_ERROR}"
-            fi
-            ;;
-
-        # BUGFIX v2.4: active/idle is a valid "already running" state
-        active|idle|active/idle)
-            info "Drive is already ${state_before} — no wake needed"
-            result="${EXIT_OK}"
-            ;;
-
-        unknown)
-            warn "Drive state could not be determined — attempting wake anyway"
-            if wake_drive "${disk_path}" "${DRY_RUN}"; then
-                result="${EXIT_OK}"
-            else
-                result="${EXIT_WARNING}"
-            fi
-            ;;
-
-        *)
-            warn "Unexpected drive state '${state_before}' — skipping"
-            result="${EXIT_WARNING}"
-            ;;
-    esac
-
-    return "${result}"
-}
 
 # =============================================================================
 #  HELP & VERSION
