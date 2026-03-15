@@ -39,10 +39,17 @@ src="$(readlink -f ./sata-spindown-guard.sh 2>/dev/null \
   && sudo ln -sf "$src" /usr/local/bin/hdd_poweroff_guard.sh \
   && sudo ln -sf "$src" /usr/local/bin/hdd_poweroff_guard \
   ; echo "" \
+  ; echo "" \
   ; echo "✅ Installed successfully!" \
   ; echo "   Commands: hddown, hddoff, hdd_poweroff_guard" \
-  ; echo "   Source:   $src" \
-  ; echo "   Symlink:  $(readlink -f /usr/local/bin/hddown 2>/dev/null || echo 'N/A')"
+  ; echo "✅ Installed successfully!" \
+  ; echo "   Source:  $src" \
+  ; echo "" \
+  ; ls -la /usr/local/bin/hddown \
+            /usr/local/bin/hddoff \
+            /usr/local/bin/hdd_poweroff_guard \
+            /usr/local/bin/hdd_poweroff_guard.sh 2>/dev/null
+
 ```
 
 > The install command automatically resolves the absolute path, grants the executable  
