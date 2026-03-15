@@ -5,7 +5,7 @@
 # Author:    Mikhail Deynekin <mid1977@gmail.com>
 # Site:      https://deynekin.com
 # Date:      15/03/2026
-# Version:   2.3
+# Version:   2.4
 # Purpose:   Power off SATA HDD if it is not mounted and is spinning.
 #            Intended to be run from cron every 5 min as a safety guard,
 #            ensuring the HDD is never left spinning when idle.
@@ -47,7 +47,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # =============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="2.3"
+readonly SCRIPT_VERSION="2.4"
 readonly LOCK_FILE="/var/run/${SCRIPT_NAME%.sh}.lock"
 
 : "${HDD_ID:=}"
@@ -516,16 +516,23 @@ wake_drive() {
         sleep 3
         local state_after
         state_after=$(get_drive_state "${disk_path}")
-        if [[ "${state_after}" =~ ^(active|idle)$ ]]; then
-            success "Drive is awake (state: ${state_after})"
-            return 0
-        else
-            warn "Drive state after wake attempt: ${state_after} (may still be spinning up)"
-            return "${EXIT_WARNING}"
-        fi
+        case "${state_after}" in
+            active|idle|active/idle)
+                success "Drive is awake (state: ${state_after})"
+                return "${EXIT_OK}"
+                ;;
+            standby|sleep)
+                warn "Drive still reports ${state_after} after wake attempt"
+                return "${EXIT_WARNING}"
+                ;;
+            *)
+                warn "Drive state after wake attempt: ${state_after} (unexpected, may still be spinning up)"
+                return "${EXIT_WARNING}"
+                ;;
+        esac
     else
         error "dd read failed on ${disk_path} — cannot wake drive"
-        return 1
+        return "${EXIT_ERROR}"
     fi
 }
 
