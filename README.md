@@ -1,9 +1,6 @@
-```markdown
 # sata-spindown-guard 🌓🛡️
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Shell](https://img.shields.io/badge/shell-bash-orange.svg)](https://www.gnu.org/software/bash/)
-[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)]()
-[![Scope](https://img.shields.io/badge/scope-SATA%20HDD%20only-blue.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Shell](https://img.shields.io/badge/shell-bash-orange.svg)](https://www.gnu.org/software/bash/) ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg) ![Scope](https://img.shields.io/badge/scope-SATA%20HDD%20only-blue.svg)
+
 
 > **A safe, cron-friendly guard script that automatically spins down idle SATA HDDs and prevents them from being left spinning when not in use.**
 
@@ -386,4 +383,3 @@ This project is licensed under the **MIT License** – see the [`LICENSE`](LICEN
 ### ⭐ Star this repository if it helps you!
 
 **sata-spindown-guard** – *Keeping your backup drives truly cold when they should rest.* 🌓🛡️
-```
